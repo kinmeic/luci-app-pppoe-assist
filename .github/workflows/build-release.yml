@@ -47,6 +47,9 @@ jobs:
           rsync -a --delete \
             --exclude '.git' \
             --exclude '.github' \
+            --exclude 'sdk' \
+            --exclude '*.tar.zst' \
+            --exclude 'sha256sums' \
             ./ sdk/package/luci-app-pppoe-assist/
 
       - name: Update feeds
