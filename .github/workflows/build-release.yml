@@ -43,14 +43,14 @@ jobs:
       - name: Prepare package source
         run: |
           set -eu
-          mkdir -p sdk/customfeed/luci-app-pppoe-assist
+          mkdir -p sdk/customfeed/applications/luci-app-pppoe-assist
           rsync -a --delete \
             --exclude '.git' \
             --exclude '.github' \
             --exclude 'sdk' \
             --exclude '*.tar.zst' \
             --exclude 'sha256sums' \
-            ./ sdk/customfeed/luci-app-pppoe-assist/
+            ./ sdk/customfeed/applications/luci-app-pppoe-assist/
 
       - name: Update feeds
         working-directory: sdk
@@ -66,7 +66,7 @@ jobs:
         run: |
           set -eu
           make defconfig
-          make package/luci-app-pppoe-assist/compile V=s
+          make package/feeds/custom/luci-app-pppoe-assist/compile V=s
 
       - name: Collect artifacts
         run: |
