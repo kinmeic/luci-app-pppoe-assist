@@ -36,9 +36,7 @@ jobs:
           set -eu
           base="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64"
           wget -nv "${base}/${SDK_NAME}.tar.zst"
-          wget -nv "${base}/sha256sums"
-          grep " ${SDK_NAME}.tar.zst" sha256sums > sdk.sha256
-          sha256sum -c sdk.sha256
+          echo "94f55f15599b57e3b341681d6deffa8e6ce38fc829e0ed14ad5c4f4a4d85a4dc  ${SDK_NAME}.tar.zst" | sha256sum -c -
           tar --zstd -xf "${SDK_NAME}.tar.zst"
           mv "${SDK_NAME}" sdk
 
