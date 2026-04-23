@@ -24,12 +24,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          path: feed/luci-app-pppoe-assist
 
       - name: Build package
         uses: openwrt/gh-action-sdk@main
         env:
           ARCH: ${{ matrix.arch }}
           PACKAGES: luci-app-pppoe-assist
+          FEED_DIR: ${{ github.workspace }}/feed
           NO_DEFAULT_FEEDS: 1
           EXTRA_FEEDS: src-git|luci|https://github.com/openwrt/luci.git;openwrt-24.10
           BUILD_LOG: 1
