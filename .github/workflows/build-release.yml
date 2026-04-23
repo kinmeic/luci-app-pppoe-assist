@@ -65,6 +65,7 @@ jobs:
         working-directory: sdk
         run: |
           set -eu
+          echo "CONFIG_PACKAGE_luci-app-pppoe-assist=m" >> .config
           make defconfig
           make package/feeds/custom/luci-app-pppoe-assist/compile V=s
 
