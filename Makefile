@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-pppoe-assist
-PKG_VERSION:=0.1.16
+PKG_VERSION:=0.1.17
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=Eugene Chan

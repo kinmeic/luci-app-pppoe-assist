@@ -70,7 +70,7 @@ jobs:
         run: |
           set -eu
           mkdir -p artifacts
-          find sdk/bin/packages -type f -name '*.ipk' -exec cp -v {} artifacts/ \;
+          find sdk/bin/packages -type f -name 'luci-app-pppoe-assist_*.ipk' -exec cp -v {} artifacts/ \;
           test "$(find artifacts -type f -name '*.ipk' | wc -l)" -gt 0
 
       - name: Upload workflow artifacts
