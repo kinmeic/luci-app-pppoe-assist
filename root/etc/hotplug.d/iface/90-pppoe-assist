@@ -1,0 +1,6 @@
+#!/bin/sh
+
+[ "$ACTION" = "ifup" ] || exit 0
+[ -n "$INTERFACE" ] || exit 0
+
+/usr/bin/pppoe-assist-check "$INTERFACE" hotplug &

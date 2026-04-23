@@ -1,0 +1,21 @@
+{
+	"luci-app-pppoe-assist": {
+		"description": "Grant access to LuCI PPPoE Assist",
+		"read": {
+			"ubus": {
+				"file": [ "exec" ],
+				"luci": [ "getFeatures" ],
+				"network.interface": [ "dump", "status" ],
+				"service": [ "list" ]
+			},
+			"uci": [ "pppoe-assist", "network" ]
+		},
+		"write": {
+			"ubus": {
+				"file": [ "exec" ],
+				"uci": [ "apply", "confirm", "changes", "order", "set", "add", "delete", "commit" ]
+			},
+			"uci": [ "pppoe-assist" ]
+		}
+	}
+}

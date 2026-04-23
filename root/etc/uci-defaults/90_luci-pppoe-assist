@@ -1,0 +1,10 @@
+#!/bin/sh
+
+uci -q batch <<'EOF'
+delete ucitrack.@pppoe-assist[0]
+add ucitrack pppoe-assist
+set ucitrack.@pppoe-assist[-1].init='pppoe-assist'
+commit ucitrack
+EOF
+
+exit 0

@@ -1,0 +1,6 @@
+config settings 'main'
+	option enabled '0'
+	option interface 'wan'
+	option bad_prefixes ''
+	option max_attempts '20'
+	option redial_delay '3'

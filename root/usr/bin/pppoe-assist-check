@@ -1,0 +1,153 @@
+#!/bin/sh
+
+NAME="pppoe-assist"
+RUN_DIR="/var/run/$NAME"
+
+log() {
+	logger -t "$NAME" "$*"
+}
+
+trim() {
+	local value="$*"
+
+	value="${value#"${value%%[![:space:]]*}"}"
+	value="${value%"${value##*[![:space:]]}"}"
+	printf '%s' "$value"
+}
+
+get_ipv4_address() {
+	local iface="$1"
+	local ip=""
+	local i
+
+	for i in 1 2 3 4 5; do
+		ip="$(ifstatus "$iface" 2>/dev/null | jsonfilter -q -e '@["ipv4-address"][0].address' 2>/dev/null)"
+		[ -n "$ip" ] && break
+		sleep 1
+	done
+
+	printf '%s' "$ip"
+}
+
+find_matched_prefix() {
+	local ip="$1"
+	local bad_prefixes="$2"
+	local old_ifs="$IFS"
+	local prefix
+
+	IFS=','
+	for prefix in $bad_prefixes; do
+		IFS="$old_ifs"
+		prefix="$(trim "$prefix")"
+		IFS=','
+
+		[ -n "$prefix" ] || continue
+
+		case "$ip" in
+			"$prefix"*)
+				IFS="$old_ifs"
+				printf '%s' "$prefix"
+				return 0
+			;;
+		esac
+	done
+
+	IFS="$old_ifs"
+	return 1
+}
+
+read_attempts() {
+	local file="$1"
+	local attempts
+
+	attempts="$(cat "$file" 2>/dev/null)"
+	case "$attempts" in
+		''|*[!0-9]*) attempts=0 ;;
+	esac
+
+	printf '%s' "$attempts"
+}
+
+write_attempts() {
+	local file="$1"
+	local attempts="$2"
+
+	mkdir -p "$RUN_DIR"
+	printf '%s\n' "$attempts" > "$file"
+}
+
+redial_interface() {
+	local iface="$1"
+	local redial_delay="$2"
+
+	ubus call "network.interface.$iface" down >/dev/null 2>&1
+	sleep "$redial_delay"
+	ubus call "network.interface.$iface" up >/dev/null 2>&1
+}
+
+main() {
+	local iface_arg="$1"
+	local trigger="$2"
+	local enabled iface_cfg bad_prefixes max_attempts redial_delay
+	local ip matched_prefix attempts_file attempts lock_dir
+
+	[ -n "$iface_arg" ] || exit 0
+	[ -n "$trigger" ] || trigger="manual"
+
+	enabled="$(uci -q get pppoe-assist.main.enabled)"
+	[ "$enabled" = "1" ] || exit 0
+
+	iface_cfg="$(uci -q get pppoe-assist.main.interface)"
+	[ -n "$iface_cfg" ] || iface_cfg="wan"
+	[ "$iface_arg" = "$iface_cfg" ] || exit 0
+
+	bad_prefixes="$(uci -q get pppoe-assist.main.bad_prefixes)"
+	[ -n "$(trim "$bad_prefixes")" ] || exit 0
+
+	max_attempts="$(uci -q get pppoe-assist.main.max_attempts)"
+	case "$max_attempts" in
+		''|*[!0-9]*) max_attempts=20 ;;
+	esac
+	[ "$max_attempts" -gt 0 ] || max_attempts=20
+
+	redial_delay="$(uci -q get pppoe-assist.main.redial_delay)"
+	case "$redial_delay" in
+		''|*[!0-9]*) redial_delay=3 ;;
+	esac
+
+	mkdir -p "$RUN_DIR"
+	lock_dir="$RUN_DIR/$iface_arg.lock"
+	if ! mkdir "$lock_dir" 2>/dev/null; then
+		log "$iface_arg check skipped because another check is running"
+		exit 0
+	fi
+	trap 'rmdir "$lock_dir" 2>/dev/null' EXIT INT TERM
+
+	ip="$(get_ipv4_address "$iface_arg")"
+	if [ -z "$ip" ]; then
+		log "$iface_arg has no IPv4 address after $trigger trigger"
+		exit 0
+	fi
+
+	attempts_file="$RUN_DIR/$iface_arg.attempts"
+	matched_prefix="$(find_matched_prefix "$ip" "$bad_prefixes")"
+	if [ -z "$matched_prefix" ]; then
+		write_attempts "$attempts_file" 0
+		log "$iface_arg got IP $ip, no bad prefix matched, reset attempts"
+		exit 0
+	fi
+
+	attempts="$(read_attempts "$attempts_file")"
+	attempts=$((attempts + 1))
+	write_attempts "$attempts_file" "$attempts"
+
+	if [ "$attempts" -gt "$max_attempts" ]; then
+		log "$iface_arg got IP $ip, matched bad prefix $matched_prefix, reached max attempts $max_attempts, stop redialing"
+		exit 0
+	fi
+
+	log "$iface_arg got IP $ip, matched bad prefix $matched_prefix, redial attempt $attempts/$max_attempts"
+	redial_interface "$iface_arg" "$redial_delay"
+}
+
+main "$@"

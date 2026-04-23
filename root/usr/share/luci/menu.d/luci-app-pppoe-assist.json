@@ -1,0 +1,14 @@
+{
+	"admin/services/pppoe-assist": {
+		"title": "PPPoE Assist",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "pppoe-assist/settings"
+		},
+		"depends": {
+			"acl": [ "luci-app-pppoe-assist" ],
+			"uci": { "pppoe-assist": true }
+		}
+	}
+}
