@@ -29,6 +29,14 @@ get_ipv4_address() {
 	printf '%s' "$ip"
 }
 
+is_pppoe_interface() {
+	local iface="$1"
+	local proto
+
+	proto="$(uci -q get "network.$iface.proto")"
+	[ "$proto" = "pppoe" ]
+}
+
 find_matched_prefix() {
 	local ip="$1"
 	local bad_prefixes="$2"
@@ -100,6 +108,10 @@ main() {
 	iface_cfg="$(uci -q get pppoe-assist.main.interface)"
 	[ -n "$iface_cfg" ] || iface_cfg="wan"
 	[ "$iface_arg" = "$iface_cfg" ] || exit 0
+	if ! is_pppoe_interface "$iface_arg"; then
+		log "$iface_arg is not a PPPoE interface, skip redial check"
+		exit 0
+	fi
 
 	bad_prefixes="$(uci -q get pppoe-assist.main.bad_prefixes)"
 	[ -n "$(trim "$bad_prefixes")" ] || exit 0

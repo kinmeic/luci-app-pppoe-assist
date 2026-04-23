@@ -13,6 +13,7 @@ return view.extend({
 	render: function(data) {
 		var networks = data;
 		var m, s, o;
+		var pppoeFound = false;
 
 		m = new form.Map('pppoe-assist', _('PPPoE Assist'),
 			_('Check the configured PPPoE interface after it comes up. If the assigned IPv4 address starts with a configured bad prefix, the interface is redialed until the maximum attempt count is reached.'));
@@ -30,9 +31,27 @@ return view.extend({
 		o.rmempty = false;
 		networks.forEach(function(net) {
 			var name = net.getName();
-			if (name)
+			var proto = net.getProtocol && net.getProtocol();
+			if (name && proto == 'pppoe') {
+				pppoeFound = true;
 				o.value(name, name);
+			}
 		});
+		if (!pppoeFound) {
+			o.value('', _('No PPPoE interfaces found'));
+			o.default = '';
+		}
+		o.validate = function(section_id, value) {
+			if (!value && !pppoeFound)
+				return true;
+
+			for (var i = 0; i < networks.length; i++) {
+				if (networks[i].getName() == value && networks[i].getProtocol && networks[i].getProtocol() == 'pppoe')
+					return true;
+			}
+
+			return _('Please select a PPPoE interface.');
+		};
 
 		o = s.option(form.Value, 'bad_prefixes', _('Bad IP prefixes'));
 		o.datatype = 'string';
@@ -53,7 +72,12 @@ return view.extend({
 		o.inputtitle = _('Run check');
 		o.inputstyle = 'apply';
 		o.onclick = function(section_id) {
-			var iface = this.map.lookupOption('interface', section_id)[0].formvalue(section_id) || 'wan';
+			var iface = this.map.lookupOption('interface', section_id)[0].formvalue(section_id);
+
+			if (!iface) {
+				ui.addNotification(null, E('p', {}, _('No PPPoE interface is selected.')), 'warning');
+				return Promise.resolve();
+			}
 
 			return fs.exec('/usr/bin/pppoe-assist-check', [ iface, 'luci' ]).then(function(res) {
 				var message = res.stderr || res.stdout || _('Check command finished. See system log for details.');

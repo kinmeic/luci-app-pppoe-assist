@@ -7,6 +7,8 @@ a redial until the configured maximum attempt count is reached.
 ## Behavior
 
 - Checks only the configured logical network interface, default `wan`.
+- Only PPPoE (`proto=pppoe`) interfaces are selectable in LuCI and eligible at
+  runtime.
 - Runs on OpenWrt `iface` hotplug `ifup` events.
 - Runs once immediately when the LuCI config is applied through `ucitrack`.
 - Splits bad prefixes by comma, trims surrounding spaces, and compares by string
