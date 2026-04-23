@@ -30,6 +30,8 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           PACKAGES: luci-app-pppoe-assist
+          NO_DEFAULT_FEEDS: 1
+          EXTRA_FEEDS: src-git|luci|https://github.com/openwrt/luci.git;openwrt-24.10
           BUILD_LOG: 1
           NO_SHFMT_CHECK: 1
           V: s
