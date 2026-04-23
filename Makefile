@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-pppoe-assist
-PKG_VERSION:=0.1.17
+PKG_VERSION:=1.0.0
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=Eugene Chan
@@ -21,6 +21,10 @@ endef
 
 define Package/luci-app-pppoe-assist/description
   Monitor PPPoE interface IP addresses and redial when configured bad prefixes match.
+endef
+
+define Package/luci-app-pppoe-assist/conffiles
+/etc/config/pppoe-assist
 endef
 
 define Build/Compile
