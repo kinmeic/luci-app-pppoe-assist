@@ -1,0 +1,65 @@
+name: Build and Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: OpenWrt ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - x86_64-24.10.0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build package
+        uses: openwrt/gh-action-sdk@main
+        env:
+          ARCH: ${{ matrix.arch }}
+          PACKAGES: luci-app-pppoe-assist
+          BUILD_LOG: 1
+          NO_SHFMT_CHECK: 1
+          V: s
+
+      - name: Collect artifacts
+        run: |
+          set -eu
+          mkdir -p artifacts
+          find bin/packages -type f -name '*.ipk' -exec cp -v {} artifacts/ \;
+          if [ -d logs ]; then
+            tar -czf "artifacts/build-logs-${{ matrix.arch }}.tar.gz" logs
+          fi
+          test "$(find artifacts -type f -name '*.ipk' | wc -l)" -gt 0
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-pppoe-assist-${{ matrix.arch }}
+          path: artifacts/*
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME}"
+          notes="OpenWrt 24.10 package build for ${tag}."
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" artifacts/* --clobber
+          else
+            gh release create "$tag" artifacts/* --title "$tag" --notes "$notes"
+          fi
