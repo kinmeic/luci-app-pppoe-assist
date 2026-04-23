@@ -58,8 +58,11 @@ jobs:
           set -eu
           echo "src-link custom $(pwd)/customfeed" >> feeds.conf.default
           ./scripts/feeds update -a
+          ./scripts/feeds list -r custom | grep luci-app-pppoe-assist || true
           ./scripts/feeds install -a -p custom
           ./scripts/feeds install luci-base
+          grep -n "luci-app-pppoe-assist" feeds/custom.index || true
+          find package/feeds -maxdepth 3 \( -type l -o -type d \) | grep luci-app-pppoe-assist || true
 
       - name: Build package
         working-directory: sdk
@@ -67,6 +70,7 @@ jobs:
           set -eu
           echo "CONFIG_PACKAGE_luci-app-pppoe-assist=m" >> .config
           make defconfig
+          grep '^CONFIG_PACKAGE_luci-app-pppoe-assist=' .config || true
           make package/feeds/custom/luci-app-pppoe-assist/compile V=s
 
       - name: Collect artifacts
