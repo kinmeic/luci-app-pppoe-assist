@@ -66,7 +66,7 @@ jobs:
         run: |
           set -eu
           make defconfig
-          make package/feeds/custom/luci-app-pppoe-assist/compile V=s
+          make package/luci-app-pppoe-assist/compile V=s
 
       - name: Collect artifacts
         run: |
