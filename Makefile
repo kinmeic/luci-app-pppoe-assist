@@ -1,12 +1,11 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-pppoe-assist
-PKG_VERSION:=1.0.0
+PKG_VERSION:=1.1.0
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=Eugene Chan
 PKG_LICENSE:=MIT
-PKGARCH:=all
 
 include $(INCLUDE_DIR)/package.mk
 

@@ -4,22 +4,64 @@ START=99
 STOP=10
 USE_PROCD=0
 
+RUN_DIR=/var/run/pppoe-assist
+
 start() {
 	local enabled iface
 
 	enabled="$(uci -q get pppoe-assist.main.enabled)"
 	[ "$enabled" = "1" ] || return 0
 
-	mkdir -p /var/run/pppoe-assist
+	mkdir -p "$RUN_DIR"
 
 	iface="$(uci -q get pppoe-assist.main.interface)"
 	[ -n "$iface" ] || iface="wan"
 
-	/usr/bin/pppoe-assist-check "$iface" manual &
+	# At boot the interface is usually still dialing, so the check would
+	# only log a misleading "no IPv4 address" line. The hotplug ifup event
+	# covers the initial connection; only run here when the interface is
+	# already up (e.g. manual /etc/init.d start or ucitrack apply).
+	ifstatus "$iface" 2>/dev/null | jsonfilter -q -e '@["ipv4-address"][0].address' 2>/dev/null | grep -q . || return 0
+
+	/usr/bin/pppoe-assist-check "$iface" manual </dev/null >/dev/null 2>&1 &
 }
 
 stop() {
-	rm -rf /var/run/pppoe-assist
+	local pf pid i cmdline
+
+	# Kill checks that are still running (e.g. sleeping in a redial delay)
+	# before removing the run directory, so no process keeps operating on
+	# the interface after its lock directory is gone.
+	for pf in "$RUN_DIR"/*.pid; do
+		[ -f "$pf" ] || continue
+		pid="$(cat "$pf" 2>/dev/null)"
+		case "$pid" in
+			''|*[!0-9]*) continue ;;
+		esac
+
+		cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+		case "$cmdline" in
+			*'/usr/bin/pppoe-assist-check'*) ;;
+			*) continue ;;
+		esac
+
+		kill "$pid" 2>/dev/null
+
+		i=0
+		while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 3 ]; do
+			sleep 1
+			i=$((i + 1))
+		done
+
+		if kill -0 "$pid" 2>/dev/null; then
+			cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+			case "$cmdline" in
+				*'/usr/bin/pppoe-assist-check'*) kill -KILL "$pid" 2>/dev/null ;;
+			esac
+		fi
+	done
+
+	rm -rf "$RUN_DIR"
 }
 
 reload() {
@@ -27,6 +69,7 @@ reload() {
 
 	enabled="$(uci -q get pppoe-assist.main.enabled)"
 	if [ "$enabled" = "1" ]; then
+		stop
 		start
 	else
 		stop

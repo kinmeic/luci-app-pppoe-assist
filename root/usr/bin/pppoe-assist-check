@@ -2,9 +2,55 @@
 
 NAME="pppoe-assist"
 RUN_DIR="/var/run/$NAME"
+LOCK_DIR=""
+PID_FILE=""
+ACTIVE_CHILD=""
+CHECK_RESULT=""
+COOLDOWN_REMAINING=0
+IPV4_ADDRESS=""
 
+# Workers log to syslog. stderr is also useful when the script is run directly;
+# the normal hotplug, init and LuCI launchers detach it.
 log() {
 	logger -t "$NAME" "$*"
+	printf '%s\n' "$*" >&2
+}
+
+cleanup() {
+	if [ -n "$ACTIVE_CHILD" ]; then
+		kill "$ACTIVE_CHILD" 2>/dev/null
+		wait "$ACTIVE_CHILD" 2>/dev/null
+		ACTIVE_CHILD=""
+	fi
+
+	if [ -n "$PID_FILE" ]; then
+		rm -f "$PID_FILE"
+		PID_FILE=""
+	fi
+	if [ -n "$LOCK_DIR" ]; then
+		rmdir "$LOCK_DIR" 2>/dev/null
+		LOCK_DIR=""
+	fi
+}
+
+terminate() {
+	trap - INT TERM
+	cleanup
+	exit 0
+}
+
+# Run sleeps as tracked child processes so TERM can interrupt them immediately.
+interruptible_sleep() {
+	local seconds="$1"
+	local status
+
+	[ "$seconds" -gt 0 ] || return 0
+	sleep "$seconds" &
+	ACTIVE_CHILD="$!"
+	wait "$ACTIVE_CHILD"
+	status="$?"
+	ACTIVE_CHILD=""
+	return "$status"
 }
 
 trim() {
@@ -15,18 +61,22 @@ trim() {
 	printf '%s' "$value"
 }
 
+# Poll ifstatus until the interface has an IPv4 address or ip_wait seconds pass.
+# The result is stored in IPV4_ADDRESS so this function stays in the current
+# shell and its sleep remains interruptible.
 get_ipv4_address() {
 	local iface="$1"
-	local ip=""
-	local i
+	local ip_wait="$2"
+	local i=0
 
-	for i in 1 2 3 4 5; do
-		ip="$(ifstatus "$iface" 2>/dev/null | jsonfilter -q -e '@["ipv4-address"][0].address' 2>/dev/null)"
-		[ -n "$ip" ] && break
-		sleep 1
+	IPV4_ADDRESS=""
+	while :; do
+		IPV4_ADDRESS="$(ifstatus "$iface" 2>/dev/null | jsonfilter -q -e '@["ipv4-address"][0].address' 2>/dev/null)"
+		[ -n "$IPV4_ADDRESS" ] && break
+		[ "$i" -ge "$ip_wait" ] && break
+		interruptible_sleep 1
+		i=$((i + 1))
 	done
-
-	printf '%s' "$ip"
 }
 
 is_pppoe_interface() {
@@ -37,6 +87,10 @@ is_pppoe_interface() {
 	[ "$proto" = "pppoe" ]
 }
 
+# Prefixes are compared as plain string prefixes: an entry matches when the
+# assigned IP starts with the entry text. Entries are not aligned to octet
+# boundaries, so "218" matches 218.x.x.x but "21" would match 21.x.x.x,
+# 210.x.x.x, 218.x.x.x and so on.
 find_matched_prefix() {
 	local ip="$1"
 	local bad_prefixes="$2"
@@ -45,9 +99,9 @@ find_matched_prefix() {
 
 	IFS=','
 	for prefix in $bad_prefixes; do
-		IFS="$old_ifs"
-		prefix="$(trim "$prefix")"
-		IFS=','
+		# Trim surrounding whitespace inline to avoid a subshell per entry.
+		prefix="${prefix#"${prefix%%[![:space:]]*}"}"
+		prefix="${prefix%"${prefix##*[![:space:]]}"}"
 
 		[ -n "$prefix" ] || continue
 
@@ -84,23 +138,125 @@ write_attempts() {
 	printf '%s\n' "$attempts" > "$file"
 }
 
+# Once max_attempts is reached the script pauses redialing. The counter is kept
+# as a cooldown marker and reset after retry_cooldown seconds so the interface
+# is given another chance later instead of being ignored forever.
+# Returns 0 when the cooldown has expired and the counter was reset.
+maybe_reset_cooldown() {
+	local attempts_file="$1"
+	local retry_cooldown="$2"
+	local now mtime elapsed
+
+	[ "$retry_cooldown" -gt 0 ] || return 1
+
+	now="$(date +%s)"
+	mtime="$(date -r "$attempts_file" +%s 2>/dev/null)" || return 1
+	case "$mtime" in
+		''|*[!0-9]*) return 1 ;;
+	esac
+
+	elapsed=$((now - mtime))
+	if [ "$elapsed" -ge "$retry_cooldown" ]; then
+		write_attempts "$attempts_file" 0
+		return 0
+	fi
+
+	COOLDOWN_REMAINING=$((retry_cooldown - elapsed))
+	return 1
+}
+
 redial_interface() {
 	local iface="$1"
 	local redial_delay="$2"
 
-	ubus call "network.interface.$iface" down >/dev/null 2>&1
-	sleep "$redial_delay"
-	ubus call "network.interface.$iface" up >/dev/null 2>&1
+	if ! ubus call "network.interface.$iface" down >/dev/null 2>&1; then
+		log "$iface could not be taken down"
+		return 1
+	fi
+
+	interruptible_sleep "$redial_delay"
+
+	if ! ubus call "network.interface.$iface" up >/dev/null 2>&1; then
+		log "$iface could not be brought up"
+		return 1
+	fi
+
+	return 0
+}
+
+# Check the current address once and redial when it matches a bad prefix.
+# Sets CHECK_RESULT to "matched" when a redial was triggered, "exhausted" when
+# the attempt budget is cooling down, and "done" otherwise. It is deliberately
+# called in the current shell because redialing and signal handling are stateful.
+check_and_redial() {
+	local iface="$1"
+	local trigger="$2"
+	local bad_prefixes="$3"
+	local max_attempts="$4"
+	local redial_delay="$5"
+	local ip_wait="$6"
+	local retry_cooldown="$7"
+	local attempts_file="$8"
+	local ip matched_prefix attempts
+
+	CHECK_RESULT="done"
+	COOLDOWN_REMAINING=0
+
+	get_ipv4_address "$iface" "$ip_wait"
+	ip="$IPV4_ADDRESS"
+	if [ -z "$ip" ]; then
+		log "$iface has no IPv4 address after $trigger trigger"
+		return 0
+	fi
+
+	matched_prefix="$(find_matched_prefix "$ip" "$bad_prefixes")"
+	if [ -z "$matched_prefix" ]; then
+		write_attempts "$attempts_file" 0
+		log "$iface got IP $ip, no bad prefix matched, reset attempts"
+		return 0
+	fi
+
+	attempts="$(read_attempts "$attempts_file")"
+	if [ "$attempts" -ge "$max_attempts" ]; then
+		if maybe_reset_cooldown "$attempts_file" "$retry_cooldown"; then
+			log "$iface retry cooldown expired, reset attempts"
+			attempts=0
+		else
+			if [ "$retry_cooldown" -gt 0 ]; then
+				log "$iface got IP $ip, matched bad prefix $matched_prefix, reached max attempts $max_attempts, pause redialing"
+			else
+				log "$iface got IP $ip, matched bad prefix $matched_prefix, reached max attempts $max_attempts, stop redialing"
+			fi
+			CHECK_RESULT="exhausted"
+			return 0
+		fi
+	fi
+
+	attempts=$((attempts + 1))
+	write_attempts "$attempts_file" "$attempts"
+
+	log "$iface got IP $ip, matched bad prefix $matched_prefix, redial attempt $attempts/$max_attempts"
+	if redial_interface "$iface" "$redial_delay"; then
+		CHECK_RESULT="matched"
+	fi
 }
 
 main() {
 	local iface_arg="$1"
 	local trigger="$2"
-	local enabled iface_cfg bad_prefixes max_attempts redial_delay
-	local ip matched_prefix attempts_file attempts lock_dir
+	local enabled iface_cfg bad_prefixes max_attempts redial_delay ip_wait
+	local retry_cooldown attempts_file existing_pid
 
 	[ -n "$iface_arg" ] || exit 0
 	[ -n "$trigger" ] || trigger="manual"
+
+	# A LuCI RPC must not remain open across repeated redials or a potentially
+	# long retry cooldown. Start a detached worker and return immediately.
+	if [ "$trigger" = "luci" ]; then
+		"$0" "$iface_arg" luci-worker </dev/null >/dev/null 2>&1 &
+		printf '%s\n' "PPPoE check started. See the system log for progress."
+		exit 0
+	fi
 
 	enabled="$(uci -q get pppoe-assist.main.enabled)"
 	[ "$enabled" = "1" ] || exit 0
@@ -127,39 +283,74 @@ main() {
 		''|*[!0-9]*) redial_delay=3 ;;
 	esac
 
-	mkdir -p "$RUN_DIR"
-	lock_dir="$RUN_DIR/$iface_arg.lock"
-	if ! mkdir "$lock_dir" 2>/dev/null; then
-		log "$iface_arg check skipped because another check is running"
-		exit 0
-	fi
-	trap 'rmdir "$lock_dir" 2>/dev/null' EXIT INT TERM
+	ip_wait="$(uci -q get pppoe-assist.main.ip_wait)"
+	case "$ip_wait" in
+		''|*[!0-9]*) ip_wait=5 ;;
+	esac
+	[ "$ip_wait" -gt 0 ] || ip_wait=5
 
-	ip="$(get_ipv4_address "$iface_arg")"
-	if [ -z "$ip" ]; then
-		log "$iface_arg has no IPv4 address after $trigger trigger"
-		exit 0
+	retry_cooldown="$(uci -q get pppoe-assist.main.retry_cooldown)"
+	case "$retry_cooldown" in
+		''|*[!0-9]*) retry_cooldown=3600 ;;
+	esac
+
+	mkdir -p "$RUN_DIR"
+	LOCK_DIR="$RUN_DIR/$iface_arg.lock"
+	PID_FILE="$RUN_DIR/$iface_arg.pid"
+	if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+		existing_pid="$(cat "$PID_FILE" 2>/dev/null)"
+		case "$existing_pid" in
+			''|*[!0-9]*)
+				log "$iface_arg check skipped because another check is starting"
+				exit 0
+			;;
+		esac
+
+		if kill -0 "$existing_pid" 2>/dev/null &&
+			tr '\0' ' ' < "/proc/$existing_pid/cmdline" 2>/dev/null |
+				grep -q '/usr/bin/pppoe-assist-check'; then
+			log "$iface_arg check skipped because another check is running"
+			exit 0
+		fi
+
+		rm -f "$PID_FILE"
+		rmdir "$LOCK_DIR" 2>/dev/null || exit 0
+		if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+			log "$iface_arg check skipped because another check acquired the lock"
+			exit 0
+		fi
 	fi
+
+	printf '%s\n' "$$" > "$PID_FILE"
+	trap cleanup EXIT
+	trap terminate INT TERM
 
 	attempts_file="$RUN_DIR/$iface_arg.attempts"
-	matched_prefix="$(find_matched_prefix "$ip" "$bad_prefixes")"
-	if [ -z "$matched_prefix" ]; then
-		write_attempts "$attempts_file" 0
-		log "$iface_arg got IP $ip, no bad prefix matched, reset attempts"
-		exit 0
-	fi
 
-	attempts="$(read_attempts "$attempts_file")"
-	attempts=$((attempts + 1))
-	write_attempts "$attempts_file" "$attempts"
+	# After a redial the interface is checked again inside this process
+	# instead of relying on the hotplug event of the new connection, which
+	# could fire while the lock is still held and be silently dropped.
+	while :; do
+		check_and_redial "$iface_arg" "$trigger" "$bad_prefixes" \
+			"$max_attempts" "$redial_delay" "$ip_wait" "$retry_cooldown" \
+			"$attempts_file"
 
-	if [ "$attempts" -gt "$max_attempts" ]; then
-		log "$iface_arg got IP $ip, matched bad prefix $matched_prefix, reached max attempts $max_attempts, stop redialing"
-		exit 0
-	fi
-
-	log "$iface_arg got IP $ip, matched bad prefix $matched_prefix, redial attempt $attempts/$max_attempts"
-	redial_interface "$iface_arg" "$redial_delay"
+		case "$CHECK_RESULT" in
+			matched)
+				trigger="recheck"
+			;;
+			exhausted)
+				[ "$retry_cooldown" -gt 0 ] || break
+				[ "$COOLDOWN_REMAINING" -gt 0 ] || COOLDOWN_REMAINING=1
+				log "$iface_arg will retry in $COOLDOWN_REMAINING seconds"
+				interruptible_sleep "$COOLDOWN_REMAINING"
+				trigger="cooldown"
+			;;
+			*)
+				break
+			;;
+		esac
+	done
 }
 
 main "$@"

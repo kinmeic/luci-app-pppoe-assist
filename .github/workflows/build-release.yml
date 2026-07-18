@@ -9,16 +9,25 @@ on:
 permissions:
   contents: write
 
-env:
-  OPENWRT_VERSION: 24.10.0
-  OPENWRT_TARGET: x86/64
-  OPENWRT_ARCH: x86-64
-  SDK_NAME: openwrt-sdk-24.10.0-x86-64_gcc-13.3.0_musl.Linux-x86_64
-
 jobs:
   build:
-    name: OpenWrt 24.10.0 x86_64
+    name: OpenWrt ${{ matrix.openwrt_version }} ${{ matrix.package_format }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - openwrt_version: 24.10.7
+            package_format: ipk
+            sdk_name: openwrt-sdk-24.10.7-x86-64_gcc-13.3.0_musl.Linux-x86_64
+          - openwrt_version: 25.12.5
+            package_format: apk
+            sdk_name: openwrt-sdk-25.12.5-x86-64_gcc-14.3.0_musl.Linux-x86_64
+
+    env:
+      OPENWRT_VERSION: ${{ matrix.openwrt_version }}
+      PACKAGE_FORMAT: ${{ matrix.package_format }}
+      SDK_NAME: ${{ matrix.sdk_name }}
 
     steps:
       - name: Checkout
@@ -36,7 +45,11 @@ jobs:
           set -eu
           base="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64"
           wget -nv "${base}/${SDK_NAME}.tar.zst"
-          echo "94f55f15599b57e3b341681d6deffa8e6ce38fc829e0ed14ad5c4f4a4d85a4dc  ${SDK_NAME}.tar.zst" | sha256sum -c -
+          # Verify against the official checksum list instead of a hardcoded
+          # hash, so version bumps only need OPENWRT_VERSION/SDK_NAME changes.
+          wget -nv -O sha256sums "${base}/sha256sums"
+          awk -v name="${SDK_NAME}.tar.zst" \
+            '$2 == name || $2 == "*" name { print }' sha256sums | sha256sum -c -
           tar --zstd -xf "${SDK_NAME}.tar.zst"
           mv "${SDK_NAME}" sdk
 
@@ -70,23 +83,38 @@ jobs:
         run: |
           set -eu
           mkdir -p artifacts
-          find sdk/bin/packages -type f -name 'luci-app-pppoe-assist_*.ipk' -exec cp -v {} artifacts/ \;
-          test "$(find artifacts -type f -name '*.ipk' | wc -l)" -gt 0
+          find sdk/bin/packages -type f \
+            -name "luci-app-pppoe-assist_*.${PACKAGE_FORMAT}" \
+            -exec cp -v {} artifacts/ \;
+          test "$(find artifacts -type f -name "*.${PACKAGE_FORMAT}" | wc -l)" -gt 0
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: luci-app-pppoe-assist-openwrt-${{ env.OPENWRT_VERSION }}-x86_64
+          name: luci-app-pppoe-assist-openwrt-${{ env.OPENWRT_VERSION }}-${{ env.PACKAGE_FORMAT }}-x86_64
           path: artifacts/*
 
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: luci-app-pppoe-assist-openwrt-*
+          path: artifacts
+          merge-multiple: true
+
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           tag="${GITHUB_REF_NAME}"
-          notes="OpenWrt ${OPENWRT_VERSION} x86_64 package build for ${tag}."
+          notes="OpenWrt x86_64 package builds for ${tag}: IPK for 24.10.7 and APK for 25.12.5."
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" artifacts/* --clobber
           else

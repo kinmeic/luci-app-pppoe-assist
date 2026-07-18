@@ -3,4 +3,12 @@
 [ "$ACTION" = "ifup" ] || exit 0
 [ -n "$INTERFACE" ] || exit 0
 
-/usr/bin/pppoe-assist-check "$INTERFACE" hotplug &
+# Cheap pre-filter so unrelated interfaces do not spawn the check script on
+# every ifup. The script re-validates everything against UCI itself.
+[ "$(uci -q get pppoe-assist.main.enabled)" = "1" ] || exit 0
+
+iface_cfg="$(uci -q get pppoe-assist.main.interface)"
+[ -n "$iface_cfg" ] || iface_cfg="wan"
+[ "$INTERFACE" = "$iface_cfg" ] || exit 0
+
+/usr/bin/pppoe-assist-check "$INTERFACE" hotplug </dev/null >/dev/null 2>&1 &
